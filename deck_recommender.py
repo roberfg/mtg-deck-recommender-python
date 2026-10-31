@@ -1,4 +1,4 @@
-"""Analiza el metajuego de Standard y recomienda un mazo para comprar."""
+"""Analiza el metajuego de varios formatos y recomienda mazos para comprar."""
 
 from __future__ import annotations
 
@@ -20,12 +20,20 @@ FORMAT_URLS = {
     "pauper": "https://mtgdecks.net/Pauper/metagame:last-30-days",
     "premodern": "https://mtgdecks.net/Premodern/metagame:last-30-days",
 }
-WEIGHTS = {
+BEST_WEIGHTS = {
     "price_score": 0.30,
     "conversion_score": 0.35,
-    "winrate_score": 0.25,
-    "trend_score": 0.10,
+    "winrate_score": 0.30,
+    "trend_score": 0.05,
 }
+CHEAP_WEIGHTS = {
+        "price_score": 0.80,
+        "conversion_score": 0.10,
+        "winrate_score": 0.05,
+        "trend_score": 0.05,
+}
+WEIGHTS = BEST_WEIGHTS
+FORMAT_WEIGHTS = {"standard": CHEAP_WEIGHTS}
 
 
 def parse_number(value: str | None) -> float | None:
@@ -106,6 +114,8 @@ def relative_price_score(prices: pd.Series) -> tuple[pd.Series, float]:
 def calculate_ivc(
     dataframe: pd.DataFrame,
     tiers: set[str] | None = None,
+    format_name: str | None = None,
+    weights: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, float]:
     """Filtra los datos válidos y calcula las puntuaciones y el IVC."""
     required = ["winrate_pct", "top25_conversion", "paper_price_usd"]
@@ -124,7 +134,8 @@ def calculate_ivc(
     valid["conversion_score"] = normalize_series(valid["top25_conversion"])
     valid["winrate_score"] = normalize_series(valid["winrate_pct"])
     valid["trend_score"] = normalize_series(valid["trend_pct"].fillna(0))
-    valid["ivc"] = sum(valid[column] * weight for column, weight in WEIGHTS.items())
+    selected_weights = weights or FORMAT_WEIGHTS.get(format_name, WEIGHTS)
+    valid["ivc"] = sum(valid[column] * weight for column, weight in selected_weights.items())
     valid = valid.sort_values(["ivc", "paper_price_usd"], ascending=[False, True]).reset_index(drop=True)
     return valid, median_price
 
@@ -154,10 +165,18 @@ def build_markdown_report(
     raw: pd.DataFrame,
     scored: pd.DataFrame,
     median_price: float,
+    weights: dict[str, float] | None = None,
 ) -> str:
     """Genera el informe Markdown de un formato."""
     recommendation = select_recommendation(scored)
     second_recommendation = select_second_recommendation(scored, recommendation)
+    selected_weights = weights or FORMAT_WEIGHTS.get(format_name, WEIGHTS)
+    weight_summary = (
+        f"precio {selected_weights['price_score']:.0%}, "
+        f"conversión Top 25% {selected_weights['conversion_score']:.0%}, "
+        f"winrate {selected_weights['winrate_score']:.0%}, "
+        f"trend {selected_weights['trend_score']:.0%}"
+    )
     second_name = second_recommendation["name"] if second_recommendation is not None else "No disponible"
     second_details = ""
     if second_recommendation is not None:
@@ -190,7 +209,7 @@ def build_markdown_report(
 - Mazos extraídos: {len(raw)}
 - Mazos válidos incluidos: {len(scored)}
 - Precio Paper mediano: ${median_price:.2f}
-- Ponderación: precio 30%, conversión Top 25% 35%, winrate 25%, trend 10%
+- Ponderación: {weight_summary}
 
 ### Recomendación
 
@@ -275,62 +294,40 @@ def print_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Recomienda mazos según formato, coste y rendimiento.")
-    parser.add_argument(
-        "--format",
-        choices=sorted(FORMAT_URLS),
-        default="standard",
-        help="Formato que se analizará. El periodo es siempre de 30 días.",
+    parser = argparse.ArgumentParser(description="Recomienda mazos en los cinco formatos disponibles.")
+    profile_group = parser.add_mutually_exclusive_group()
+    profile_group.add_argument(
+        "--cheap",
+        action="store_true",
+        help="Aplica la ponderación orientada al precio a todos los formatos.",
     )
-    parser.add_argument(
-        "--tiers",
-        default="1",
-        help="Nivel acumulativo de tiers: 1, 2, 3 o all. Por defecto: 1.",
+    profile_group.add_argument(
+        "--best",
+        action="store_true",
+        help="Aplica la ponderación orientada al rendimiento a todos los formatos.",
     )
-    parser.add_argument("--all", action="store_true", help="Analiza todos los formatos disponibles.")
-    parser.add_argument("--url", help=argparse.SUPPRESS)
-    parser.add_argument("--output", help="CSV de salida del análisis para un solo formato.")
-    parser.add_argument("--raw-output", help="CSV de todas las filas para un solo formato.")
-    parser.add_argument("--report-output", help="Informe Markdown para un solo formato.")
-    parser.add_argument("--top", type=int, default=10, help="Cantidad de mazos mostrados en el ranking.")
     args = parser.parse_args()
 
-    tier_values = {"1": "A", "2": "B", "3": "C"}
-    tier_level = args.tiers.lower()
-    if tier_level == "all":
-        selected_tiers = None
-    elif tier_level in tier_values:
-        selected_tiers = {tier_values[str(level)] for level in range(1, int(tier_level) + 1)}
-    else:
-        parser.error("--tiers solo admite 1, 2, 3 o all.")
-
-    if args.all and (args.url or args.output or args.raw_output or args.report_output):
-        parser.error("--all no puede combinarse con --url, --output, --raw-output o --report-output.")
-
-    formats = list(FORMAT_URLS) if args.all else [args.format]
+    profile_weights = CHEAP_WEIGHTS if args.cheap else BEST_WEIGHTS if args.best else None
+    selected_tiers = {"A"}
+    formats = list(FORMAT_URLS)
     reports: list[str] = []
     for format_name in formats:
-        url = args.url if len(formats) == 1 and args.url else FORMAT_URLS[format_name]
-        analysis_output = args.output if len(formats) == 1 and args.output else f"deck_analysis_{format_name}.csv"
-        raw_output = args.raw_output if len(formats) == 1 and args.raw_output else f"deck_data_{format_name}.csv"
+        url = FORMAT_URLS[format_name]
+        analysis_output = f"deck_analysis_{format_name}.csv"
+        raw_output = f"deck_data_{format_name}.csv"
 
         raw = parse_decks(fetch_html(url))
         raw.insert(0, "format", format_name)
-        scored, median_price = calculate_ivc(raw, selected_tiers)
+        scored, median_price = calculate_ivc(raw, selected_tiers, format_name, profile_weights)
         raw.to_csv(raw_output, index=False)
         scored.to_csv(analysis_output, index=False)
-        print_report(format_name, raw, scored, median_price, max(1, args.top))
+        print_report(format_name, raw, scored, median_price, 10)
         print(f"Datos originales guardados en: {raw_output}")
         print(f"Análisis guardado en: {analysis_output}")
-        reports.append(build_markdown_report(format_name, raw, scored, median_price))
+        reports.append(build_markdown_report(format_name, raw, scored, median_price, profile_weights))
 
-    report_output = (
-        args.report_output
-        if len(formats) == 1 and args.report_output
-        else "deck_recommendations.md"
-        if len(formats) > 1
-        else f"deck_recommendations_{formats[0]}.md"
-    )
+    report_output = "deck_recommendations.md"
     report_header = "# Recomendaciones de mazos\n\nPeriodo: últimos 30 días\n\n"
     with open(report_output, "w", encoding="utf-8") as report_file:
         report_file.write(report_header + "\n".join(reports))

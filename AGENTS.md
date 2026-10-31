@@ -16,15 +16,14 @@ El script descarga en vivo el metajuego de los últimos 30 días para estos form
 
 El precio utilizado para el cálculo es siempre `Paper`. El precio `MTGO` se conserva únicamente como dato informativo. La tabla esperada es `table#allArchetypes`.
 
-## Argumentos y alcance
+## Ejecución y alcance
 
-- Sin argumentos se analiza `Standard`, con tier A y los 10 primeros puestos en la salida de terminal.
-- `--format` selecciona un único formato.
-- `--all` analiza todos los formatos disponibles.
-- `--url` sustituye la URL del análisis individual y no se puede combinar con `--all`.
-- `--top` limita únicamente el ranking mostrado en terminal; el informe Markdown conserva el ranking completo.
-- `--output`, `--raw-output` y `--report-output` personalizan las salidas de un único formato.
-- Las salidas personalizadas y `--url` no se pueden combinar con `--all`.
+- `python deck_recommender.py` analiza los cinco formatos disponibles.
+- `python deck_recommender.py --cheap` aplica la ponderación de Standard a todos los formatos.
+- `python deck_recommender.py --best` aplica la ponderación competitiva a todos los formatos, incluido Standard.
+- `--cheap` y `--best` son opcionales y mutuamente excluyentes.
+- Se consideran únicamente los mazos de tier A y se muestran los 10 primeros puestos en la salida de terminal.
+- El periodo de análisis es siempre de los últimos 30 días.
 
 ## Reglas de filtrado
 
@@ -37,16 +36,27 @@ El precio utilizado para el cálculo es siempre `Paper`. El precio `MTGO` se con
 
 ## Cálculo del IVC
 
+Para Pioneer, Modern, Pauper y Premodern:
+
 ```text
 IVC = puntuación de precio * 0.30
     + puntuación de conversión Top 25% * 0.35
-    + puntuación de winrate * 0.25
-    + puntuación de trend * 0.10
+    + puntuación de winrate * 0.30
+    + puntuación de trend * 0.05
+```
+
+Para Standard, por el riesgo de rotación:
+
+```text
+IVC = puntuación de precio * 0.80
+    + puntuación de conversión Top 25% * 0.10
+    + puntuación de winrate * 0.05
+    + puntuación de trend * 0.05
 ```
 
 Todas las métricas se normalizan entre 1 y 10. La puntuación del precio usa la mediana de los precios `Paper` válidos, no la media aritmética. La mediana recibe 5 puntos, los precios más bajos obtienen mejor puntuación y el resultado queda limitado entre 1 y 10.
 
-Las ponderaciones del IVC son: precio 30%, conversión Top 25% 35%, winrate 25% y trend 10%.
+Las ponderaciones generales del IVC son: precio 30%, conversión Top 25% 35%, winrate 30% y trend 5%. Standard usa precio 80%, conversión Top 25% 10%, winrate 5% y trend 5%.
 
 La primera recomendación siempre es el mazo con el IVC más alto. Los empates se resuelven con el precio `Paper` más bajo. La segunda recomendación es el siguiente mazo distinto del ranking y se muestra con sus métricas principales.
 
